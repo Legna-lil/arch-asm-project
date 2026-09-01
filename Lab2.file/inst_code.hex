@@ -1,0 +1,23 @@
+Address     Code        Basic                        Line Source
+
+0x00400000  0x0fc10417  auipc x8,0x0000fc10          9        la      s0, arr
+0x00400004  0x00040413  addi x8,x8,0                      
+0x00400008  0x0fc10497  auipc x9,0x0000fc10          10       lw      s1, n               # s1 = 5
+0x0040000c  0x00c4a483  lw x9,12(x9)                      
+0x00400010  0xfff48913  addi x18,x9,0xffffffff       11       addi    s2, s1, -1          # outer = 4
+0x00400014  0x02094e63  blt x18,x0,0x0000003c        14       blt     s2, zero, done      # if outer < 0, exit
+0x00400018  0x00000293  addi x5,x0,0                 15       li      t0, 0               # j = 0
+0x0040001c  0x0322d663  bge x5,x18,0x0000002c        17       bge     t0, s2, outer_next  # if j >= outer, break
+0x00400020  0x00229313  slli x6,x5,2                 18       slli    t1, t0, 2
+0x00400024  0x006403b3  add x7,x8,x6                 19       add     t2, s0, t1
+0x00400028  0x0003ae03  lw x28,0(x7)                 20       lw      t3, 0(t2)           # arr[j]
+0x0040002c  0x0043ae83  lw x29,4(x7)                 21       lw      t4, 4(t2)           # arr[j+1]
+0x00400030  0x01ceaf33  slt x30,x29,x28              22       slt     t5, t4, t3          # t5 = (arr[j+1] < arr[j]) ? 1 : 0
+0x00400034  0x000f0663  beq x30,x0,0x0000000c        23       beq     t5, zero, no_swap   # if arr[j+1] >= arr[j], no swap
+0x00400038  0x01d3a023  sw x29,0(x7)                 24       sw      t4, 0(t2)           # swap
+0x0040003c  0x01c3a223  sw x28,4(x7)                 25       sw      t3, 4(t2)
+0x00400040  0x00128293  addi x5,x5,1                 27       addi    t0, t0, 1
+0x00400044  0xfd9ff06f  jal x0,0xffffffd8            28       j       inner
+0x00400048  0xfff90913  addi x18,x18,0xffffffff      30       addi    s2, s2, -1
+0x0040004c  0xfc9ff06f  jal x0,0xffffffc8            31       j       outer
+0x00400050  0x00000293  addi x5,x0,0                 35       li      t0, 0
