@@ -34,8 +34,14 @@ module InstructionMemory #(
     initial begin
         for (i = 0; i < 1024; i = i + 1)
             mem[i] = 32'h00000013;
-        // 再从外部文件加载实际程序（去掉注释的干净 hex 文件）
+`ifdef SYNTHESIS
+        // 综合阶段(出 bitstream)不用外部文件，直接用脚本生成的字面量赋值，
+        // 保证程序一定被烘焙进 ROM（内容由 gen_uart_demo.py 生成）
+`include "imem_boot_init.vh"
+`else
+        // 仿真阶段：从外部 hex 文件加载实际程序
         $readmemh(HEX_FILE, mem);
+`endif
     end
 
     // 地址偏移处理：PC 起始地址为 0x00400000

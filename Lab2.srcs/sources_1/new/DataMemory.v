@@ -20,7 +20,9 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module DataMemory (
+module DataMemory #(
+    parameter DATA_FILE = "../../../../Lab2.file/mem_clean.hex"
+) (
     input        clk,
     input        mem_we,       // 写使能
     input  [31:0] addr,         // 内存地址
@@ -40,8 +42,13 @@ module DataMemory (
         for (i = 0; i < 1024; i = i + 1)
             mem[i] = 32'b0;
 
-        // Load data memory from file (hex words, one per line)
-        $readmemh("../../../../Lab2.file/mem_clean.hex", mem);
+`ifdef SYNTHESIS
+        // 综合阶段：数据内容由脚本生成的字面量赋值提供（gen_uart_demo.py 生成）
+`include "dmem_boot_init.vh"
+`else
+        // 仿真阶段：Load data memory from file (hex words, one per line)
+        $readmemh(DATA_FILE, mem);
+`endif
     end
     
     // 写操作（同步上升沿）

@@ -3,10 +3,19 @@
 // RISC-V 五级流水线 CPU (IF -> ID -> EX -> MEM -> WB)
 // 硬布线控制器 / EX 级 Forwarding / load-use Stall / 分支 Flush
 module PipelineCPU #(
-    parameter HEX_FILE = "../../../../Lab2.file/inst_code_clean.hex"
+    parameter HEX_FILE  = "../../../../Lab2.file/inst_code_clean.hex",
+    parameter DATA_FILE = "../../../../Lab2.file/mem_clean.hex"
 )(
     input clk,
-    input rst
+    input rst,
+    // ===== 存储器映射外设(MMIO)总线：MEM 级访存译码结果 =====
+    // 纯 CPU 仿真时可全部悬空/不连接，不影响原有功能；
+    // 板上 SoC 通过本组信号把 UART 等外设挂到 0x1000_0000 ~ 0x1000_FFFF。
+    input  wire [31:0] memio_rdata,  // 外设窗口读回数据（LW 命中窗口时代替 RAM 数据）
+    output wire        memio_read,   // 本拍 MEM 级在读外设窗口
+    output wire        memio_write,  // 本拍 MEM 级在写外设窗口
+    output wire [31:0] memio_addr,   // MEM 级访存地址（ALU 结果）
+    output wire [31:0] memio_wdata   // SW 写数据（已前递）
     );
 
     localparam NOP = 32'h00000013; // addi x0, x0, 0
@@ -319,14 +328,26 @@ module PipelineCPU #(
     assign ex_mem_reg_we     = ex_mem_reg_we_r;
 
     // ===================== MEM =====================
+    // MMIO 窗口：0x1000_0000 ~ 0x1000_FFFF（低于 DMEM 基址 0x1001_0000，与 RAM 不冲突）
+    wire memio_hit = (ex_mem_alu_result_r[31:16] == 16'h1000);
+
+    wire [31:0] ram_rdata;
     wire [31:0] mem_rdata;
-    DataMemory dm_inst (
+    DataMemory #(.DATA_FILE(DATA_FILE)) dm_inst (
         .clk(clk),
         .mem_we(ex_mem_mem_we),
         .addr(ex_mem_alu_result_r),
         .wdata(ex_mem_wdata),
-        .rdata(mem_rdata)
+        .rdata(ram_rdata)
     );
+
+    // LW/SW 命中外设窗口时读写全部交给外设：
+    // DataMemory 的 DATA_BASE=0x10010000，对窗口地址自动判为越界，不会误写 RAM。
+    assign mem_rdata   = memio_hit ? memio_rdata : ram_rdata;
+    assign memio_read  = ex_mem_mem_to_reg && memio_hit;
+    assign memio_write = ex_mem_mem_we    && memio_hit;
+    assign memio_addr  = ex_mem_alu_result_r;
+    assign memio_wdata = ex_mem_wdata;
 
     // ---------- MEM/WB 流水线寄存器 ----------
     reg [31:0] mem_wb_alu_result;
