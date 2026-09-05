@@ -9,6 +9,8 @@
 
 ## 汇编部分
 实现 UART 接口，能够通过串口双向交换信息
+
 顶层模块：[./Lab2.srcs/sources_1/new/EES338Top.v](./Lab2.srcs/sources_1/new/EES338Top.v)
-详见 [./UART继承说明.md](./UART继承说明.md)
+
+详见 [./UART集成说明.md](./UART集成说明.md)
 
