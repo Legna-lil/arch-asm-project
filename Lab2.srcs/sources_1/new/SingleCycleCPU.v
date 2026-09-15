@@ -80,7 +80,10 @@ module SingleCycleCPU(
     
     // --- Register File ---
     wire [31:0] rf_wdata = is_jal ? pc_plus_4 : (mem_to_reg ? mem_rdata : alu_result);
-    RegisterFile rf_inst (
+    // WRITE_FIRST=0: the single-cycle datapath must NOT use the write-first bypass,
+    // otherwise rd == rs1 instructions (addi x5,x5,1 / lw x9,12(x9)) form a
+    // combinational loop. The bypass is only needed by the 5-stage pipeline.
+    RegisterFile #(.WRITE_FIRST(0)) rf_inst (
         .clk(clk),
         .reg_we(reg_we),
         .raddr1(rs1),

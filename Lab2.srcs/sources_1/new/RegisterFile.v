@@ -21,7 +21,15 @@
 
 
 // RegisterFile.v
-module RegisterFile (
+module RegisterFile #(
+    // WRITE_FIRST = 1 : same-cycle WB write is bypassed to the ID read ports
+    //                   (required by the 5-stage pipeline)
+    // WRITE_FIRST = 0 : read ports always return the stored (old) value
+    //                   (required by SingleCycleCPU: with the bypass enabled,
+    //                    instructions whose rd == rs1/rs2 -- e.g. addi x5,x5,1
+    //                    or lw x9,12(x9) -- would form a combinational loop)
+    parameter integer WRITE_FIRST = 1
+) (
     input        clk,
     input        reg_we,        // дʹ��
     input  [4:0] raddr1,        // ���˿�1��ַ
@@ -49,9 +57,10 @@ module RegisterFile (
     end
     
     // ������������߼���x0��0��
-    assign rdata1 = (raddr1 == 0) ? 32'b0 :
-                    (reg_we && (waddr == raddr1)) ? wdata : regs[raddr1];
-    assign rdata2 = (raddr2 == 0) ? 32'b0 :
-                    (reg_we && (waddr == raddr2)) ? wdata : regs[raddr2];
+    wire bypass1 = (WRITE_FIRST != 0) && reg_we && (waddr == raddr1);
+    wire bypass2 = (WRITE_FIRST != 0) && reg_we && (waddr == raddr2);
+
+    assign rdata1 = (raddr1 == 0) ? 32'b0 : bypass1 ? wdata : regs[raddr1];
+    assign rdata2 = (raddr2 == 0) ? 32'b0 : bypass2 ? wdata : regs[raddr2];
     
 endmodule
