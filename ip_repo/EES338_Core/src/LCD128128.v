@@ -27,7 +27,8 @@ module LCD128128 #(
     parameter integer WR_CYCLES    = 10,
     parameter integer SETUP_CYCLES = 4,
     parameter integer HOLD_CYCLES  = 4,
-    parameter integer RST_CYCLES   = 200000
+    parameter integer RST_CYCLES   = 200000,
+    parameter integer RD_CYCLES    = 30        // 读周期 RD# 低电平拍数（600ns @50MHz）
 )(
     input  wire       clk,        // 逻辑时钟（50MHz）
     input  wire       rst,        // 复位（高有效）
@@ -35,12 +36,14 @@ module LCD128128 #(
     input  wire       rs,         // 0=命令 1=数据（与 wr_req 同拍）
     input  wire [7:0] wdata,      // 写数据（与 wr_req 同拍）
     input  wire       rst_req,    // 单拍软复位请求
+    input  wire       rd_req,     // 单拍读请求（读显示 RAM：RS=1 + RD# 低）
     input  wire       inv_rst,    // 1 = LCD_RST 输出取反（调试用）
     input  wire       swap_wrrd,  // 1 = LCD_WR#/LCD_RD# 输出互换（调试用）
     output wire       busy,       // 1=控制器忙（CPU 轮询此位）
-    output wire [7:0] lcd_d,      // LCD_D0..D7
+    output wire [7:0] rd_data,    // 最近一次读回的字节
+    inout  wire [7:0] lcd_d,      // LCD_D0..D7（写时驱动、读时高阻）
     output wire       lcd_wr_n,   // LCD_WR#（低有效写选通）
-    output wire       lcd_rd_n,   // LCD_RD#（默认恒 1）
+    output wire       lcd_rd_n,   // LCD_RD#（低有效读选通）
     output wire       lcd_cs_n,   // LCD_CS#（低有效片选）
     output wire       lcd_rs,     // LCD_RS
     output wire       lcd_rst_n   // LCD_RST（默认低有效）
@@ -52,7 +55,8 @@ module LCD128128 #(
                      S_SETUP  = 3'd2,   // 数据/RS 建立
                      S_WRLOW  = 3'd3,   // WR# 低电平脉冲
                      S_HOLD   = 3'd4,   // 数据保持
-                     S_RSTLOW = 3'd5;   // 软复位脉宽
+                     S_RSTLOW = 3'd5,   // 软复位脉宽
+                     S_RDLOW  = 3'd6;   // 读选通（RD# 低，采样数据总线）
 
     reg [2:0]  state;
     reg [15:0] cnt;        // 段内计数
@@ -62,6 +66,8 @@ module LCD128128 #(
     reg [7:0] d_r;
     reg       wr_n_r, rd_n_r, cs_n_r, rs_r, rst_n_r;
     reg       busy_r;
+    reg       d_oe;        // 1 = 驱动数据总线（写）；0 = 高阻（读）
+    reg [7:0] rd_data_r;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -75,6 +81,8 @@ module LCD128128 #(
             cs_n_r  <= 1'b1;
             rs_r    <= 1'b0;
             rst_n_r <= 1'b0;
+            d_oe    <= 1'b1;
+            rd_data_r <= 8'h00;
         end
         else begin
             rd_n_r <= 1'b1;            // 只写方向：RD# 一直无效（高）
@@ -117,6 +125,15 @@ module LCD128128 #(
                         cnt    <= 16'd0;
                         state  <= S_SETUP;
                     end
+                    else if (rd_req) begin
+                        // 读显示 RAM：CS#=0、RS=1（数据）、RD#=0、总线放开
+                        rs_r   <= 1'b1;
+                        cs_n_r <= 1'b0;
+                        d_oe   <= 1'b0;
+                        busy_r <= 1'b1;
+                        cnt    <= 16'd0;
+                        state  <= S_RDLOW;
+                    end
                 end
 
                 // -------- 建立时间：D/RS/CS# 稳定 SETUP_CYCLES 拍 --------
@@ -156,6 +173,21 @@ module LCD128128 #(
                     end
                 end
 
+                // -------- 读选通：RD# 低 RD_CYCLES 拍，末尾采样数据总线 --------
+                S_RDLOW: begin
+                    if (cnt >= RD_CYCLES) begin
+                        rd_data_r <= lcd_d;        // 采样：本拍 RD# 仍为低（数据有效）
+                        cs_n_r    <= 1'b1;
+                        d_oe      <= 1'b1;         // 读完恢复驱动（写方向）
+                        busy_r    <= 1'b0;
+                        state     <= S_IDLE;       // rd_n_r 走默认值 1（拉高）
+                    end
+                    else begin
+                        cnt    <= cnt + 16'd1;
+                        rd_n_r <= 1'b0;            // 保持读选通低
+                    end
+                end
+
                 // -------- 软复位：LCD_RST 低电平保持 RST_CYCLES 拍 --------
                 S_RSTLOW: begin
                     rst_n_r <= 1'b0;
@@ -180,7 +212,9 @@ module LCD128128 #(
     end
 
     // ---------------- 对外输出（极性/互换由调试开关决定） ----------------
-    assign lcd_d     = d_r;
+    // 数据总线双向：写周期驱动、读周期高阻（由 LCD 侧驱动）
+    assign lcd_d     = d_oe ? d_r : 8'hZZ;
+    assign rd_data   = rd_data_r;
     assign lcd_cs_n  = cs_n_r;
     assign lcd_rs    = rs_r;
     assign busy      = busy_r;

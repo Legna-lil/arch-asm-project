@@ -94,23 +94,32 @@ foreach fg [ipx::get_file_groups -of_objects $core] {
 #      这两个文件是程序/数据被"烘焙"进片内 ROM/RAM 的内容，必须放进 IP，否则
 #      别人用这个 IP 综合时会找不到 include 文件（IP 不可用）。这里手工加进合成/仿真文件组。----
 set ip_srcdir $ip_repo/$name/src
+# 先把两个 .vh 复制进 IP 的 src 目录（-import_files 只拷贝被 HDL 引用的文件），
+# 再加进 IP 的合成/仿真文件组，这样别人用这个 IP 综合时 include 才找得到。
+foreach f {imem_boot_init.vh dmem_boot_init.vh} {
+    if {![file exists $ip_srcdir/$f]} {
+        if {[catch { file copy -force $src_cpu/$f $ip_srcdir/$f } emsg]} {
+            puts "  WARN copy $f: $emsg"
+        } else {
+            puts "  copied $f into IP src"
+        }
+    }
+}
 foreach f {imem_boot_init.vh dmem_boot_init.vh} {
     foreach fgname {xilinx_anylanguagesynthesis xilinx_anylanguagebehavioralsimulation} {
         if {[catch {
             set fg [ipx::get_file_groups $fgname -of_objects $core]
             if {[llength [ipx::get_files -quiet -of_objects $fg -filter "NAME==$f"]] == 0} {
-                ipx::add_file $ip_srcdir/$f $fg
+                set nf [ipx::add_file $ip_srcdir/$f $fg]
+                catch { set_property type "verilogHeader" $nf }
+                puts "  added $f -> $fgname"
             }
         } emsg]} { puts "  WARN add file $f -> $fgname: $emsg" }
     }
 }
 # 复制一份到 IP 的 src 目录（-import_files 只搬了被引用的文件）
-foreach f {imem_boot_init.vh dmem_boot_init.vh} {
-    if {![file exists $ip_srcdir/$f]} {
-        file copy -force $src/$f $ip_srcdir/$f
-        puts "  copied $f into IP src"
-    }
-}
+# （.vh 的复制已移到上面"补文件"处，与 ipx::add_file 紧挨着，顺序不能反：
+#   必须先让文件存在于 IP 的 src 目录，再加进文件组，否则加进去的路径是空的。）
 
 
 # ---- 参数：打包器已把顶层 HDL 参数自动转成"用户参数"(user parameter)，

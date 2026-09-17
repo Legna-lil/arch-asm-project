@@ -23,7 +23,8 @@ module EES338_Core #(
     parameter integer SEG_SCAN_DIV   = 16384,    // 数码管扫描相位长度
     parameter integer SEG_GROUP_SWAP = 1,        // 数码管：组0 模块在右边（本板实测）
     parameter integer SEG_REVERSE_K  = 1,        // 数码管：模块内 K1..K4 与左→右相反（本板实测）
-    parameter integer TIMER_DELAY    = 20000000  // 硬件延时长度（0.4s @50MHz）
+    parameter integer TIMER_DELAY    = 20000000, // 硬件延时长度（0.4s @50MHz）
+    parameter integer BT_RST_CYCLES  = 1000000   // 蓝牙上电复位脉宽（20ms @50MHz）
 )(
     input  wire       clk,        // 逻辑时钟（50MHz）
     input  wire       rst,        // 复位（高有效）
@@ -33,8 +34,14 @@ module EES338_Core #(
     // ---- 蓝牙(BLE-CC41-A)：bt_txd 出，bt_rxd 入 ----
     input  wire       bt_rxd,
     output wire       bt_txd,
-    // ---- LCD(JLX128128G-81202 / ST7571) 8080 并口 ----
-    output wire [7:0] lcd_d,
+    // ---- 蓝牙模块控制脚（官方 lab08：电源/复位/模式，必须由 FPGA 驱动）----
+    output wire       bt_pw_on,        // D18
+    output wire       bt_master_slave, // C16
+    output wire       bt_sw_hw,        // H15
+    output wire       bt_sw,           // E18
+    output wire       bt_rst_n,        // M2
+    // ---- LCD(JLX128128G-81202 / ST7571) 8080 并口（数据线双向：写驱动/读高阻）----
+    inout  wire [7:0] lcd_d,
     output wire       lcd_wr_n,
     output wire       lcd_rd_n,
     output wire       lcd_cs_n,
@@ -81,7 +88,8 @@ module EES338_Core #(
         .SEG_SCAN_DIV   (SEG_SCAN_DIV),
         .SEG_GROUP_SWAP (SEG_GROUP_SWAP),
         .SEG_REVERSE_K  (SEG_REVERSE_K),
-        .TIMER_DELAY    (TIMER_DELAY)
+        .TIMER_DELAY    (TIMER_DELAY),
+        .BT_RST_CYCLES  (BT_RST_CYCLES)
     ) periph_inst (
         .clk          (clk),
         .rst          (rst),
@@ -96,6 +104,11 @@ module EES338_Core #(
         .uart_txd     (uart_txd),
         .bt_rxd       (bt_rxd),
         .bt_txd       (bt_txd),
+        .bt_pw_on        (bt_pw_on),
+        .bt_master_slave (bt_master_slave),
+        .bt_sw_hw        (bt_sw_hw),
+        .bt_sw           (bt_sw),
+        .bt_rst_n        (bt_rst_n),
         .lcd_d        (lcd_d),
         .lcd_wr_n     (lcd_wr_n),
         .lcd_rd_n     (lcd_rd_n),

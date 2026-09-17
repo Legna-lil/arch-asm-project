@@ -36,7 +36,8 @@ module PeriphMMIO #(
     parameter integer SEG_SCAN_DIV   = 16384,   // 数码管扫描相位长度（50MHz → 328us/相位）
     parameter integer SEG_GROUP_SWAP = 1,       // 数码管：组0 模块在右边（本板实测）
     parameter integer SEG_REVERSE_K  = 1,       // 数码管：模块内 K1..K4 与左→右相反（本板实测）
-    parameter integer TIMER_DELAY    = 20000000 // 硬件延时长度（50MHz → 0.4s）
+    parameter integer TIMER_DELAY    = 20000000, // 硬件延时长度（50MHz → 0.4s）
+    parameter integer BT_RST_CYCLES  = 1000000   // 蓝牙上电复位脉宽（50MHz → 20ms）
 )(
     input  wire        clk,
     input  wire        rst,          // 高有效
@@ -55,6 +56,12 @@ module PeriphMMIO #(
     // ---- 蓝牙(BLE-CC41-A) ----
     input  wire        bt_rxd,
     output wire        bt_txd,
+    // ---- 蓝牙模块控制脚（官方 lab08 的接法：FPGA 必须驱动这 5 根，否则模组不上电/一直复位）----
+    output wire        bt_pw_on,      // D18 电源开关（1=上电）
+    output wire        bt_master_slave, // C16 模式选择（1=从模式，手机可连）
+    output wire        bt_sw_hw,      // H15（官方：置低）
+    output wire        bt_sw,         // E18（官方：置高）
+    output wire        bt_rst_n,      // M2  复位（低有效，官方：拉低再拉高）
     // ---- LCD(JLX128128G-81202 / ST7571) ----
     output wire [7:0]  lcd_d,
     output wire        lcd_wr_n,
@@ -73,10 +80,13 @@ module PeriphMMIO #(
     localparam [31:0] A_UART_STATUS = 32'h1000_0004;
     localparam [31:0] A_BT_DATA     = 32'h1000_0010;
     localparam [31:0] A_BT_STATUS   = 32'h1000_0014;
+    localparam [31:0] A_BT_CTRL     = 32'h1000_0018;   // w: 蓝牙模块控制脚（见下方注释）
     localparam [31:0] A_LCD_CMD     = 32'h1000_0100;
     localparam [31:0] A_LCD_DAT     = 32'h1000_0104;
     localparam [31:0] A_LCD_STATUS  = 32'h1000_0108;
     localparam [31:0] A_LCD_CTRL    = 32'h1000_010C;
+    localparam [31:0] A_LCD_RCTRL   = 32'h1000_0110;   // w: bit0=1 启动一次读显示 RAM
+    localparam [31:0] A_LCD_RDATA   = 32'h1000_0114;   // r: 最近一次读回的字节
     // 数码管：0x1000_0200 + 4*i （i=0..7）分别对应第 i 位
     localparam [31:0] A_SEG_BASE    = 32'h1000_0200;
     localparam [31:0] A_SEG_END     = 32'h1000_021C;
@@ -92,9 +102,11 @@ module PeriphMMIO #(
     wire rd_uart_data = memio_read  && (memio_addr == A_UART_DATA);
     wire wr_bt_data   = memio_write && (memio_addr == A_BT_DATA);
     wire rd_bt_data   = memio_read  && (memio_addr == A_BT_DATA);
+    wire wr_bt_ctrl   = memio_write && (memio_addr == A_BT_CTRL);
     wire wr_lcd_cmd   = memio_write && (memio_addr == A_LCD_CMD);
     wire wr_lcd_dat   = memio_write && (memio_addr == A_LCD_DAT);
     wire wr_lcd_ctrl  = memio_write && (memio_addr == A_LCD_CTRL);
+    wire wr_lcd_rctrl = memio_write && (memio_addr == A_LCD_RCTRL);
 
     // 数码管：窗口 0x1000_0200~0x1000_021C，每 4 字节一位（索引 = addr[4:2]）
     wire       wr_seg      = memio_write && (memio_addr >= A_SEG_BASE) && (memio_addr <= A_SEG_END);
@@ -136,11 +148,43 @@ module PeriphMMIO #(
         .txd     (bt_txd)
     );
 
+    // ==================== 蓝牙模块控制脚（官方 lab08 的接法） ====================
+    // 本板蓝牙模组的**电源/复位/模式**由 FPGA 的 5 根脚驱动（用户手册 §11 没写，
+    // 只有官方 lab08 的工程里才有）：
+    //   bt_pw_on(D18) / bt_master_slave(C16) / bt_sw_hw(H15) / bt_sw(E18) / bt_rst_n(M2)
+    // 官方可用状态（lab08 步骤 5：SW1 低、SW0/SW2/SW3/SW4 高，再用 SW2 复位一次）：
+    //   pw_on=1、master_slave=1（从模式）、sw_hw=0、sw=1、rst_n 拉低再拉高
+    // 这里默认给这个状态，并且上电先输出 20ms 低电平复位脉冲；也可用
+    //   0x1000_0018 BT_CTRL  覆盖（bit0 pw_on, bit1 master_slave, bit2 sw_hw, bit3 sw, bit4 rst_n）
+    //   —— 复位后默认 5'b11011，正好就是官方可用状态。
+    reg [4:0]  bt_ctrl_r;
+    reg [31:0] bt_rst_cnt;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            bt_ctrl_r  <= 5'b11011;
+            bt_rst_cnt <= 32'd0;
+        end
+        else begin
+            if (bt_rst_cnt != BT_RST_CYCLES) bt_rst_cnt <= bt_rst_cnt + 32'd1;
+            if (wr_bt_ctrl) bt_ctrl_r <= memio_wdata[4:0];
+        end
+    end
+
+    wire bt_boot_rst = (bt_rst_cnt < BT_RST_CYCLES);
+
+    assign bt_pw_on        = bt_ctrl_r[0];
+    assign bt_master_slave = bt_ctrl_r[1];
+    assign bt_sw_hw        = bt_ctrl_r[2];
+    assign bt_sw           = bt_ctrl_r[3];
+    assign bt_rst_n        = bt_ctrl_r[4] & ~bt_boot_rst;   // 上电先低 20ms（复位）再释放
+
     // ==================== LCD 并口控制器（JLX128128G-81202 / ST7571） ====================
-    reg       lcd_wr_req, lcd_rs_r, lcd_rst_req;
+    reg       lcd_wr_req, lcd_rs_r, lcd_rst_req, lcd_rd_req;
     reg [7:0] lcd_wdata_r;
     reg       lcd_inv_rst, lcd_swap_wrrd;      // ★ 调试开关（LCD_CTRL.bit1/bit2）
     wire      lcd_busy;
+    wire [7:0] lcd_rd_data;
 
     always @(posedge clk) begin
         if (rst) begin
@@ -148,6 +192,7 @@ module PeriphMMIO #(
             lcd_rs_r      <= 1'b0;
             lcd_wdata_r   <= 8'd0;
             lcd_rst_req   <= 1'b0;
+            lcd_rd_req    <= 1'b0;
             lcd_inv_rst   <= 1'b0;
             lcd_swap_wrrd <= 1'b0;
         end
@@ -156,6 +201,7 @@ module PeriphMMIO #(
             lcd_rs_r    <= wr_lcd_dat;                // 1=数据(RS=1)，0=命令(RS=0)
             lcd_wdata_r <= memio_wdata[7:0];
             lcd_rst_req <= wr_lcd_ctrl & memio_wdata[0];
+            lcd_rd_req  <= wr_lcd_rctrl & memio_wdata[0];   // 单拍读请求（读显示 RAM）
             if (wr_lcd_ctrl) begin
                 lcd_inv_rst   <= memio_wdata[1];       // 1 = LCD_RST 高有效
                 lcd_swap_wrrd <= memio_wdata[2];       // 1 = WR#/RD# 互换
@@ -173,9 +219,11 @@ module PeriphMMIO #(
         .rs         (lcd_rs_r),
         .wdata      (lcd_wdata_r),
         .rst_req    (lcd_rst_req),
+        .rd_req     (lcd_rd_req),
         .inv_rst    (lcd_inv_rst),
         .swap_wrrd  (lcd_swap_wrrd),
         .busy       (lcd_busy),
+        .rd_data    (lcd_rd_data),
         .lcd_d      (lcd_d),
         .lcd_wr_n   (lcd_wr_n),
         .lcd_rd_n   (lcd_rd_n),
@@ -189,7 +237,7 @@ module PeriphMMIO #(
     // sw 的 MEM 级晚 1 拍）会读到 busy=0，于是下一拍又发一个写请求，而控制器此时
     // 还在上一笔的建立时间里(S_SETUP)，请求会被丢掉 —— 仿真中实测出现过该问题。
     // 加上 lcd_wr_req / lcd_rst_req 之后，写请求受理到完成之间 busy 始终为 1。
-    wire lcd_busy_cpu = lcd_busy | lcd_wr_req | lcd_rst_req;
+    wire lcd_busy_cpu = lcd_busy | lcd_wr_req | lcd_rst_req | lcd_rd_req;
 
     // ==================== 8 位数码管（硬件动态扫描刷新） ====================
     reg        seg_en;              // SEG_CTRL.bit0，上电默认使能显示
@@ -262,6 +310,7 @@ module PeriphMMIO #(
         (memio_addr == A_BT_DATA)     ? {24'd0, bt_rdata}                       :
         (memio_addr == A_BT_STATUS)   ? {30'd0, bt_rx_rdy, bt_tx_busy}          :
         (memio_addr == A_LCD_STATUS)  ? {31'd0, lcd_busy_cpu}                   :
+        (memio_addr == A_LCD_RDATA)   ? {24'd0, lcd_rd_data}                    :
         (memio_addr == A_CPU_FLAGS)   ? {24'd0, cpu_flags}                      :
         (memio_addr == A_OF_COUNT)    ? cpu_of_count                            :
         (memio_addr == A_TIMER_VALUE) ? timer_value_cpu                         :
