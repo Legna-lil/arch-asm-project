@@ -44,6 +44,10 @@ def reg(s):
     return int(s[1:])  # x0..x31
 
 
+# 支持负偏移，例如 lw x1, -4(x2)
+MEM_PAT = r'(-?\d+)\((\w+)\)'
+
+
 def parse(lines):
     """返回 (pc, mnemonic, args) 列表"""
     items = []
@@ -88,15 +92,26 @@ def assemble(items):
         elif mnem == 'slli':
             op = i_type(1, reg(args[0]), reg(args[1]), int(args[2], 0))
         elif mnem == 'lw':
-            mm = re.match(r'(\d+)\((\w+)\)', args[1])
+            mm = re.match(MEM_PAT, args[1])
             op = load(2, reg(args[0]), reg(mm.group(2)), int(mm.group(1)))
         elif mnem == 'sw':
-            mm = re.match(r'(\d+)\((\w+)\)', args[1])
+            mm = re.match(MEM_PAT, args[1])
             op = store(2, reg(args[0]), reg(mm.group(2)), int(mm.group(1)))
         elif mnem in ('add', 'sub', 'and', 'or', 'xor', 'slt'):
             f7 = 0x20 if mnem == 'sub' else 0
             f3 = {'add': 0, 'sub': 0, 'and': 7, 'or': 6, 'xor': 4, 'slt': 2}[mnem]
             op = r_type(f7, f3, reg(args[0]), reg(args[1]), reg(args[2]))
+        elif mnem in ('mul', 'mulh', 'mulhu', 'mulhsu', 'div', 'divu', 'rem', 'remu'):
+            # RV32M 扩展：opcode=0110011, funct7=0000001
+            f3 = {'mul': 0, 'mulh': 1, 'mulhsu': 2, 'mulhu': 3,
+                  'div': 4, 'divu': 5, 'rem': 6, 'remu': 7}[mnem]
+            op = r_type(0x01, f3, reg(args[0]), reg(args[1]), reg(args[2]))
+        elif mnem == 'clrflags':
+            # 自定义指令 custom-0 (+funct3=000)：清标志寄存器（无操作数）
+            op = 0x0000000B
+        elif mnem == 'rdflags':
+            # 自定义指令 custom-0 (+funct3=001)：把标志寄存器读入 rd
+            op = (1 << 12) | (reg(args[0]) << 7) | 0x0B
         elif mnem in ('beq', 'bne', 'blt', 'bge'):
             f3 = {'beq': 0, 'bne': 1, 'blt': 4, 'bge': 5}[mnem]
             op = b_type(f3, reg(args[1]), reg(args[0]), labels[args[2]] - pc)
@@ -263,6 +278,125 @@ L9:
         sw    x8, 8(x10)      # mem[2] = 0x10
         sw    x9, 12(x10)     # mem[3] = 0x80000001
         sw    x11, 16(x10)    # mem[4] = 0
+        addi  x0, x0, 0
+    '''
+
+    # ---------------- 程序6：M 扩展乘除法专项（迁移 Lab1 的乘除法 + 溢出判据） ----------------
+    # 结果全部写回 DMEM（x10 = 0x10010000），由 tb_muldiv.v 逐字比对。
+    # 溢出计数（of_count）期望 6 次：mul(x14) / div(x5) / rem(x6) / div(x7) / rem(x8) / mul(x15)
+    programs['inst_muldiv.hex'] = r'''
+        auipc x10, 0x0fc10     # x10 = 0x10010000 (数据区基址)
+        addi  x10, x10, 0
+        addi  x5, x0, 12
+        addi  x6, x0, 11
+        mul   x7, x5, x6       # 12*11 = 132            mem[0]
+        sw    x7, 0(x10)
+        addi  x8, x0, -7
+        addi  x9, x0, 8
+        mul   x11, x8, x9      # -7*8 = -56             mem[1]
+        sw    x11, 4(x10)
+        addi  x12, x0, 1
+        slli  x12, x12, 31     # x12 = 0x80000000 (INT_MIN)
+        addi  x13, x0, -1      # x13 = -1 (0xFFFFFFFF)
+        mul   x14, x12, x13    # INT_MIN*(-1): 低32=0x80000000，OF=1   mem[2]
+        sw    x14, 8(x10)
+        mulh  x15, x12, x12    # 有符号×有符号 高32 = 0x40000000       mem[3]
+        sw    x15, 12(x10)
+        mulhu x16, x12, x12    # 无符号×无符号 高32 = 0x40000000       mem[4]
+        sw    x16, 16(x10)
+        mulhsu x17, x12, x12   # (-2^31)×(2^31) 高32 = 0xC0000000      mem[5]
+        sw    x17, 20(x10)
+        mulh  x18, x13, x12    # (-1)×(INT_MIN) = 2^31 高32 = 0        mem[6]
+        sw    x18, 24(x10)
+        addi  x19, x0, 100
+        addi  x20, x0, 3
+        div   x21, x19, x20    # 100/3 = 33                            mem[7]
+        sw    x21, 28(x10)
+        rem   x22, x19, x20    # 100%3 = 1                             mem[8]
+        sw    x22, 32(x10)
+        addi  x23, x0, -20
+        addi  x24, x0, 4
+        div   x25, x23, x24    # -20/4 = -5                            mem[9]
+        sw    x25, 36(x10)
+        rem   x26, x23, x24    # -20%4 = 0                             mem[10]
+        sw    x26, 40(x10)
+        addi  x27, x0, -100
+        addi  x28, x0, 3
+        div   x29, x27, x28    # -100/3 = -33                          mem[11]
+        sw    x29, 44(x10)
+        rem   x30, x27, x28    # -100%3 = -1                           mem[12]
+        sw    x30, 48(x10)
+        div   x5, x12, x0      # 除零: 商 = -1 (0xFFFFFFFF), OF=1      mem[13]
+        sw    x5, 52(x10)
+        rem   x6, x12, x0      # 除零: 余 = 被除数 = 0x80000000         mem[14]
+        sw    x6, 56(x10)
+        div   x7, x12, x13     # INT_MIN/-1: 商 = INT_MIN, OF=1        mem[15]
+        sw    x7, 60(x10)
+        rem   x8, x12, x13     # INT_MIN/-1: 余 = 0                    mem[16]
+        sw    x8, 64(x10)
+        divu  x9, x12, x13     # 无符号 0x80000000/0xFFFFFFFF = 0      mem[17]
+        sw    x9, 68(x10)
+        remu  x11, x12, x13    # 无符号 余 = 0x80000000                mem[18]
+        sw    x11, 72(x10)
+        div   x13, x12, x24    # 0x80000000/4 = 0xE0000000             mem[22]
+        sw    x13, 88(x10)
+        add   x14, x13, x24    # 紧跟依赖：0xE0000000+4 = 0xE0000004（前递）mem[19]
+        sw    x14, 76(x10)
+        mul   x15, x12, x24    # 0x80000000*4 低32 = 0，溢出 OF=1
+        sub   x16, x15, x24    # 0-4 = -4                              mem[20]
+        sw    x16, 80(x10)
+        div   x17, x19, x20    # 33
+        div   x18, x17, x20    # 背靠背除法：33/3 = 11                 mem[21]
+        sw    x18, 84(x10)
+        addi  x0, x0, 0
+    '''
+
+    # ---------------- 程序7：标志寄存器专项（rdflags / clrflags / MMIO 读） ----------------
+    # 标志字：bit0 SF, bit1 ZF, bit2 CF, bit3 OF, bit4 OF_STICKY, bit5 PF, bit6 SEEN
+    # 每种情况都同时用 rdflags 和 MMIO(0x1000_0300/0x1000_0304) 读一遍，写回 DMEM 比对
+    programs['inst_flags.hex'] = r'''
+        auipc x10, 0x0fc00     # x10 = 0x10000000 (MMIO 基址)
+        addi  x10, x10, 0
+        auipc x11, 0x0fc10     # x11 = 0x10010008
+        addi  x11, x11, -8     #     = 0x10010000 (数据区基址)
+        clrflags
+        rdflags x12            # 刚清零 -> 0x00                        mem[0]
+        sw    x12, 0(x11)
+        addi  x5, x0, 1
+        slli  x5, x5, 31       # x5 = 0x80000000
+        addi  x6, x0, -1       # x6 = -1
+        add   x7, x5, x6       # -2^31 + (-1) = 0x7FFFFFFF: OF=1, CF=1 -> 0x5C
+        rdflags x8                                                    # mem[1]
+        sw    x8, 4(x11)
+        lw    x9, 768(x10)     # MMIO CPU_FLAGS (0x1000_0300)          mem[2]
+        sw    x9, 8(x11)
+        lw    x13, 772(x10)    # MMIO OF_COUNT  (0x1000_0304) = 1      mem[3]
+        sw    x13, 12(x11)
+        addi  x14, x0, 5
+        add   x15, x14, x14    # 5+5 = 10: OF=0，粘滞位保持 -> 0x70    mem[4]
+        rdflags x16
+        sw    x16, 16(x11)
+        sub   x17, x0, x14     # 0-5 = -5: SF=1，借位 CF=1 -> 0x55     mem[5]
+        rdflags x18
+        sw    x18, 20(x11)
+        clrflags
+        rdflags x19            # 清零后 -> 0x00                        mem[6]
+        sw    x19, 24(x11)
+        mul   x20, x5, x5      # INT_MIN^2 低32 = 0: ZF=1,OF=1,PF=1 -> 0x7A  mem[7]
+        rdflags x21
+        sw    x21, 28(x11)
+        lw    x22, 772(x10)    # OF_COUNT = 1                          mem[8]
+        sw    x22, 32(x11)
+        clrflags
+        and   x23, x5, x6      # 逻辑指令不刷新标志 -> 仍为 0x00       mem[9]
+        rdflags x24
+        sw    x24, 36(x11)
+        add   x25, x5, x6      # 0x7FFFFFFF: OF=1 -> 粘滞+计数         mem[10]
+        add   x26, x25, x6     # 0x7FFFFFFE: OF=0 -> 0x74              mem[11]
+        rdflags x27
+        sw    x27, 40(x11)
+        lw    x28, 772(x10)    # OF_COUNT = 1（只有 x25 那次溢出）     mem[12]
+        sw    x28, 44(x11)
         addi  x0, x0, 0
     '''
 

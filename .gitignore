@@ -1,0 +1,38 @@
+# =============================================================================
+# .gitignore —— 只上传课程需要的东西（白名单方式）
+#   保留：Lab2.srcs（计组 cpu/ + 汇编 periph/ 源码与 testbench）、Lab2.file（程序 hex）、
+#         bitstream（已生成比特流）、ip_repo（封装好的 IP 核）、scripts（仿真/出 bit/打包脚本）、
+#         docs（说明文档 + 新增功能报告）、根目录的 *.py 程序生成器、Lab2.xpr、README.md
+#   忽略：Vivado 中间产物、仿真工作目录、答辩 PPT、第三方资料、python 缓存……
+# =============================================================================
+
+# 1) 先忽略工程根目录下的一切
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/Lab2.xpr
+
+# 2) 放行需要提交的目录
+!/Lab2.srcs/
+!/Lab2.file/
+!/bitstream/
+!/ip_repo/
+!/scripts/
+!/docs/
+
+# 3) 放行根目录下的程序生成器脚本（汇编演示程序的源码）
+!/*.py
+
+# 4) 白名单内部仍需排除的临时/缓存文件
+**/xsim.dir/
+**/.Xil/
+*.jou
+*.log
+*.str
+*.pptx
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
